@@ -69,11 +69,20 @@
 <script>
     let socket;
     let typingTimeout;
-    let localActiveCount = 0;
+    let localActiveCount = 1; // Default starting with the user itself
 
     function connectEngine() {
         const roomId = document.getElementById('roomId').value;
-        socket = new WebSocket("wss://reactive-chat-engine.onrender.com/chat");
+        const currentUser = document.getElementById('username').value;
+
+        // DYNAMIC PROTOCOL DETECTOR: Ye line auto-check karegi ki aap localhost pr ho ya render par
+        const isLocal = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1" || window.location.hostname === "";
+        const wsUrl = isLocal
+            ? "ws://localhost:8080/chat"
+            : `wss://${window.location.host}/chat`;
+
+        console.log("Connecting to core pipeline via: " + wsUrl);
+        socket = new WebSocket(wsUrl);
 
         socket.onopen = () => {
             document.getElementById('statusIndicator').innerText = "🟢 Connected to Node " + roomId;
@@ -81,49 +90,64 @@
             document.getElementById('roomTitle').innerText = "Room Pipeline: " + roomId;
             document.getElementById('userInputMessage').disabled = false;
             document.getElementById('sendPacketBtn').disabled = false;
+            updateCounterDisplay();
 
-            // Tiny timeout to let the back-end register connection before sending event
-            setTimeout(() => {
-                sendSignal("JOIN", "joined the room");
-            }, 100);
+            // Simple validation connection message
+            sendSignal("SYSTEM", `${currentUser} connected to pipeline room.`);
         };
 
         socket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
+            console.log("Raw packet payload received:", event.data);
             const messageArea = document.getElementById('messageArea');
-            const currentUser = document.getElementById('username').value;
+            let parsedData;
 
-            if (data.type === "TYPING") {
-                if (data.sender !== currentUser) {
-                    document.getElementById('typingBox').innerText = `${data.sender} is typing...`;
+            // SAFE PARSING: Agar backend flat text bhej raha ho ya JSON object, dono handle honge
+            try {
+                parsedData = JSON.parse(event.data);
+            } catch (e) {
+                // Fallback architecture if backend echoes plain text string
+                parsedData = {
+                    type: "CHAT",
+                    sender: "System Node",
+                    content: event.data
+                };
+            }
+
+            if (parsedData.type === "TYPING") {
+                if (parsedData.sender !== currentUser) {
+                    document.getElementById('typingBox').innerText = `${parsedData.sender} is typing...`;
                     clearTimeout(typingTimeout);
                     typingTimeout = setTimeout(() => {
                         document.getElementById('typingBox').innerText = "";
                     }, 1500);
                 }
             }
-            else if (data.type === "JOIN") {
-                localActiveCount++;
-                updateCounterDisplay();
-                messageArea.innerHTML += `<div class="msg-bubble msg-system">➔ ${data.sender} ${data.content}</div>`;
+            else if (parsedData.type === "SYSTEM") {
+                messageArea.innerHTML += `<div class="msg-bubble msg-system">➔ ${parsedData.content}</div>`;
                 messageArea.scrollTop = messageArea.scrollHeight;
             }
-            else if (data.type === "LEAVE" || data.type === "LEFT") {
-                if (localActiveCount > 1) localActiveCount--;
-                updateCounterDisplay();
-                messageArea.innerHTML += `<div class="msg-bubble msg-system">❌ ${data.sender} ${data.content}</div>`;
-                messageArea.scrollTop = messageArea.scrollHeight;
-            }
-            else if (data.type === "CHAT") {
-                const isSelf = data.sender === currentUser;
+            else {
+                // Default Chat execution routing
+                const isSelf = parsedData.sender === currentUser;
                 const msgHtml = `
                     <div class="msg-bubble ${isSelf ? 'msg-outgoing' : 'msg-incoming'}">
-                        <span class="meta-text"><b>${data.sender}</b></span>
-                        <div>${data.content}</div>
+                        <span class="meta-text"><b>${parsedData.sender || 'Anonymous'}</b></span>
+                        <div>${parsedData.content}</div>
                     </div>`;
                 messageArea.innerHTML += msgHtml;
                 messageArea.scrollTop = messageArea.scrollHeight;
             }
+        };
+
+        socket.onerror = (error) => {
+            console.error("Pipeline Sync Error:", error);
+            document.getElementById('statusIndicator').innerText = "🔴 Connection Error";
+            document.getElementById('statusIndicator').style.color = "#ef4444";
+        };
+
+        socket.onclose = () => {
+            document.getElementById('statusIndicator').innerText = "🔴 Disconnected";
+            document.getElementById('statusIndicator').style.color = "#ef4444";
         };
     }
 
@@ -139,7 +163,9 @@
             content: content,
             timestamp: Date.now()
         };
+
         if (socket && socket.readyState === WebSocket.OPEN) {
+            // Direct object conversion stream structure matching WebFlux mappings
             socket.send(JSON.stringify(payload));
         }
     }
@@ -147,6 +173,7 @@
     function dispatchMessage() {
         const input = document.getElementById('userInputMessage');
         if (!input.value.trim()) return;
+
         sendSignal("CHAT", input.value);
         input.value = '';
     }
